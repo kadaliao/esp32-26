@@ -1,0 +1,5 @@
+{
+  "name": "esp32-deck",
+  "owner": { "name": "Kada Liao" },
+  "plugins": [{ "name": "deck-usage", "source": "./" }]
+}

@@ -1,0 +1,1 @@
+{ "name": "deck-usage", "version": "0.1.0", "description": "Writes Claude subscription usage windows (5h / 7d) to ~/Library/Caches/deck/claude-limits.json for the desk panel, without running /usage" }
