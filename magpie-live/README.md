@@ -21,7 +21,11 @@
 
 `host/live.py` 每 250ms 读一次，推给板子。在飞请求和落地记录的 id 不是同一套，脚本按 agent+provider 配对，鸟才能原路飞回。
 
-图标：magpie 把图标编进了自己的程序里（`assets/icons/*.svg`），网关不对外提供。`live.py` 启动时从 `~/.local/bin/magpie` 里读出 Go embed 文件表，把图标导到 `~/Library/Caches/magpie-live/icons/`（magpie 升级后会自动重新导出），再用 `rsvg-convert` / `magick` 渲染成 18×18 发给板子。provider 的自定义图标读 `~/.config/magpie/icons/`。
+图标：magpie 把图标编进了自己的程序里（`assets/icons/*.svg`），网关不对外提供。`live.py` 启动时按
+`$MAGPIE_BIN` → `~/.local/bin/magpie` → `/Applications/magpie.app/Contents/MacOS/magpie` 的顺序找到程序，
+从里面读出 Go embed 文件表，把图标导到 `~/Library/Caches/magpie-live/icons/`（magpie 升级后按 mtime 自动重新导出），
+再用 `rsvg-convert` / `magick` 渲染成 18×18 发给板子。provider 的自定义图标读 `~/.config/magpie/icons/`。
+一个图标都导不出来时启动日志会报「找不到 magpie 程序」，板子上只剩彩色光点。
 
 ## 快速开始
 

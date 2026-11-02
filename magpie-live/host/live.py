@@ -26,6 +26,7 @@ import glob
 import json
 import os
 import select
+import shutil
 import signal
 import struct
 import sys
@@ -41,7 +42,12 @@ MAX_FLY = 12
 MAX_DONE = 8
 PAIR_WINDOW = 4.0
 ICON_PX = 18
-MAGPIE_BIN = os.path.expanduser("~/.local/bin/magpie")
+# magpie 装成 app 的时候没有 ~/.local/bin/magpie 这个软链，按常见位置挨个找；MAGPIE_BIN 可覆盖
+MAGPIE_BIN_CANDIDATES = [
+    os.path.expanduser("~/.local/bin/magpie"),
+    "/Applications/magpie.app/Contents/MacOS/magpie",
+    os.path.expanduser("~/Applications/magpie.app/Contents/MacOS/magpie"),
+]
 USER_ICONS = os.path.expanduser("~/.config/magpie/icons")
 CACHE = os.path.expanduser("~/Library/Caches/magpie-live")   # 在飞请求消失后，最多等几秒去配它的落地记录
 
@@ -185,19 +191,38 @@ class Tracker:
 # 用户自己设的 provider 图标在 ~/.config/magpie/icons/<hash>.ico，接口里写作 "file:<hash>.ico"。
 
 
+def find_magpie() -> str | None:
+    """找到 magpie 可执行文件。app 包装的话在 Contents/MacOS 里。"""
+    for cand in [os.environ.get("MAGPIE_BIN", ""), *MAGPIE_BIN_CANDIDATES]:
+        if cand and os.path.isfile(cand):
+            return cand
+    return shutil.which("magpie")
+
+
 def extract_icons() -> str:
     out = os.path.join(CACHE, "icons")
     stamp = os.path.join(out, ".stamp")
+    binary = find_magpie()
+    if not binary:
+        print("[live] 找不到 magpie 程序（~/Applications 或 /Applications 里的 magpie.app，"
+              "或用 MAGPIE_BIN 指定），内置图标用不了", flush=True)
+        return out
     try:
-        mtime = str(os.path.getmtime(MAGPIE_BIN))
+        mtime = str(os.path.getmtime(binary))
     except OSError:
         return out
-    if os.path.exists(stamp) and open(stamp).read() == mtime:
+    try:
+        if os.path.exists(stamp):
+            with open(stamp, encoding="utf-8") as fh:
+                if fh.read() == mtime:
+                    return out
+        os.makedirs(out, exist_ok=True)
+        with open(binary, "rb") as fh:
+            b = fh.read()
+    except OSError:  # 权限、文件正好被替换、缓存目录写不了：别让整条链路挂掉
         return out
-    os.makedirs(out, exist_ok=True)
-    b = open(MAGPIE_BIN, "rb").read()
     segs = {}
-    for line in subprocess.run(["otool", "-l", MAGPIE_BIN], capture_output=True, text=True).stdout.split("Load command"):
+    for line in subprocess.run(["otool", "-l", binary], capture_output=True, text=True).stdout.split("Load command"):
         f = dict(x.split(None, 1) for x in line.strip().splitlines() if len(x.split(None, 1)) == 2)
         if f.get("cmd") == "LC_SEGMENT_64" and f.get("segname", "").startswith("__DATA"):
             segs[f["segname"]] = (int(f["fileoff"]), int(f["filesize"]))
