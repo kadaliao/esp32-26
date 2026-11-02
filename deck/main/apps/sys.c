@@ -9,7 +9,7 @@
 #define STALE_MS  5000
 
 typedef struct {
-    char name[24];
+    char name[48];
     char kind[14];   // coding agent 种类，不是 agent 为空
     int cpu;         // %，可以超过 100（多核）
     int mem;         // MB
@@ -128,25 +128,21 @@ static void seg_bar(int x, int y, int w, int h, float v, rgb_t c)
     }
 }
 
-// 走势线：从旧到新画在 [x, x+w)，值 0..255
+// 走势线：从旧到新画在 [x, x+w)，值 0..255。一列一道竖线连到上一个点，1 像素宽不用抗锯齿
 static void spark_line(const uint8_t *hist, int x, int y, int w, int h, rgb_t c, bool fill)
 {
     int n = s_hn < w ? s_hn : w;
-    float prev_y = 0;
+    int prev = 0;
     for (int k = 0; k < n; k++) {
         int idx = (s_hi - n + k + HIST * 4) % HIST;
-        float v = hist[idx] / 255.0f;
-        float py = y + h - 1 - v * (h - 1);
+        int py = y + h - 1 - hist[idx] * (h - 1) / 255;
         int px = x + w - n + k;
-        if (fill) {
-            for (int yy = (int)py + 1; yy < y + h; yy++) {
-                fb_blend(px, yy, c.r, c.g, c.b, 30);
-            }
+        if (fill && py + 1 < y + h) {
+            fb_fill(px, py + 1, 1, y + h - py - 1, c.r, c.g, c.b, 30);
         }
-        if (k > 0) {
-            fb_bline((float)px - 1, prev_y, (float)px, py, 1.0f, c.r, c.g, c.b, 0.9f);
-        }
-        prev_y = py;
+        int top = k > 0 && prev < py ? prev : py, bot = k > 0 && prev > py ? prev : py;
+        fb_fill(px, top, 1, bot - top + 1, c.r, c.g, c.b, 230);
+        prev = py;
     }
 }
 
@@ -230,7 +226,7 @@ static void draw_procs(int y0)
         int bw = (int)(220.0f * p->cpu / maxc);
         if (bw > 0) fb_fill(8, y + 1, bw, 12, c.r, c.g, c.b, 26);
         fb_fill(8, y + 1, 2, 12, c.r, c.g, c.b, agent ? 230 : 120);
-        char name[28];
+        char name[56];
         snprintf(name, sizeof(name), "%s", p->name);
         text_fit(&font_small, name, sizeof(name), 170);
         rgb_t nc = agent ? mix(c, TXT, 0.45f) : TXT;
@@ -514,7 +510,7 @@ static void sys_tile(const tile_t *t, int64_t now_ms)
 
     if (s->ntop > 0) {
         const proc_t *p = &s->top[0];
-        char line[40];
+        char line[56];
         snprintf(line, sizeof(line), "%s", p->name);
         text_fit(&font_tiny, line, sizeof(line), t->w - 40);
         rgb_t c = p->kind[0] ? agent_color(p->kind) : TXT;

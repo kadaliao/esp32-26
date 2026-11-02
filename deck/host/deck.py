@@ -92,13 +92,16 @@ class Outbox:
 class Feeder(threading.Thread):
     """一个 app 一个线程：取数据、排进发件箱、日志里报变化。"""
 
-    def __init__(self, app, demo: bool, outbox: Outbox, stop: threading.Event):
+    SUMMARY_EVERY = 300.0  # 不加 -v 时，摘要每个 app 最多这么久记一行：常驻服务的日志别一天涨好几 MB
+
+    def __init__(self, app, demo: bool, outbox: Outbox, stop: threading.Event, verbose: bool):
         super().__init__(daemon=True, name=app.id)
-        self.app, self.demo, self.outbox, self.stop = app, demo, outbox, stop
+        self.app, self.demo, self.outbox, self.stop, self.verbose = app, demo, outbox, stop, verbose
 
     def run(self) -> None:
         app = self.app
         last_sum = last_err = None
+        sum_at = -1e9
         while not self.stop.is_set():
             t0 = time.monotonic()
             try:
@@ -106,10 +109,13 @@ class Feeder(threading.Thread):
                 extra = app.extra_lines() if hasattr(app, "extra_lines") else []
                 self.outbox.put(app.id, extra + [frame_line(app.id, frame)])
                 if hasattr(app, "summary") and (s := app.summary(frame)) != last_sum:
-                    log(app.id, s)
+                    if self.verbose or t0 - sum_at >= self.SUMMARY_EVERY:
+                        log(app.id, s)
+                        sum_at = t0
                     last_sum = s
-                for e in app.events(frame) if hasattr(app, "events") else []:
-                    log(app.id, e)
+                if self.verbose and hasattr(app, "events"):
+                    for e in app.events(frame):
+                        log(app.id, e)
                 last_err = None
             except Exception as e:  # 一帧坏数据别让线程死掉
                 msg = f"{type(e).__name__}: {e}"
@@ -120,18 +126,41 @@ class Feeder(threading.Thread):
 
 
 def host_label() -> str:
-    """首页右上角显示的主机名：电脑名里的 ASCII 部分（字库没有中文）。"""
+    """首页右上角显示的主机名（板子有中文后备字库，中文名也能显示）。"""
     try:
         name = subprocess.run(["scutil", "--get", "ComputerName"], capture_output=True, text=True,
                               timeout=3).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         name = ""
-    name = "".join(ch for ch in name if 32 <= ord(ch) < 127).replace("'s ", " ").strip()
-    return name.upper()[:22]
+    name = "".join(ch for ch in name if ord(ch) >= 32).replace("'s ", " ").strip()
+    return name.upper()[:18]
 
 
 def deck_frame(host: str) -> dict:
     return {"t": time.strftime("%H:%M"), "d": time.strftime("%a %d %b").upper(), "h": host}
+
+
+SERVICE = "com.liaoxingyi.deck"
+SERVICE_PLIST = os.path.expanduser(f"~/Library/LaunchAgents/{SERVICE}.plist")
+
+
+def pause_service() -> bool:
+    """前台跑的时候，常驻服务会抢同一个串口：先停掉它，返回要不要在退出时拉起来。
+    常驻服务自己（plist 里设了 DECK_SERVICE=1）不走这里。"""
+    if os.environ.get("DECK_SERVICE"):
+        return False
+    target = f"gui/{os.getuid()}/{SERVICE}"
+    if subprocess.run(["launchctl", "print", target], capture_output=True).returncode != 0:
+        return False
+    subprocess.run(["launchctl", "bootout", target], capture_output=True)
+    log("deck", "已暂停常驻服务，退出时恢复")
+    time.sleep(0.5)  # 等它松开串口
+    return True
+
+
+def resume_service() -> None:
+    r = subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", SERVICE_PLIST], capture_output=True)
+    log("deck", "常驻服务已恢复" if r.returncode == 0 else f"常驻服务没能恢复：{r.stderr.decode().strip()}")
 
 
 class Stop(Exception):
@@ -146,7 +175,7 @@ def run(args, apps: list) -> int:
     outbox = Outbox()
     stop = threading.Event()
     for a in apps:
-        Feeder(a, args.demo, outbox, stop).start()
+        Feeder(a, args.demo, outbox, stop, args.verbose).start()
 
     host = host_label()
     ser: Serial | None = None
@@ -272,7 +301,12 @@ def main() -> int:
 
     for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
         signal.signal(sig, on_signal)
-    return run(args, apps)
+    paused = pause_service()
+    try:
+        return run(args, apps)
+    finally:
+        if paused:
+            resume_service()
 
 
 if __name__ == "__main__":

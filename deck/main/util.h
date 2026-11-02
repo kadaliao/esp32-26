@@ -66,13 +66,23 @@ static inline float frand(float lo, float hi)
 
 // ---- JSON：字段缺了或类型不对就给默认值 ----
 
+// 放不下就截断，但不截在半个 UTF-8 字符上
 static inline void json_str(char *dst, size_t cap, const cJSON *obj, const char *key)
 {
     const cJSON *v = cJSON_GetObjectItemCaseSensitive(obj, key);
     dst[0] = 0;
-    if (cJSON_IsString(v) && v->valuestring) {
-        snprintf(dst, cap, "%s", v->valuestring);
+    if (!cJSON_IsString(v) || !v->valuestring) {
+        return;
     }
+    size_t n = strlen(v->valuestring);
+    if (n >= cap) {
+        n = cap - 1;
+        while (n > 0 && ((unsigned char)v->valuestring[n] & 0xC0) == 0x80) {
+            n--;  // 第 n 个字节是后续字节：往回退到这个字符的开头，整个字符不要
+        }
+    }
+    memcpy(dst, v->valuestring, n);
+    dst[n] = 0;
 }
 
 static inline double json_num(const cJSON *obj, const char *key, double dflt)

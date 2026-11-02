@@ -11,6 +11,7 @@ static const char *TAG = "gfx";
 uint16_t *gfx_fb;
 static uint8_t *s_trail;  // TRAIL_W * TRAIL_H * 3
 static uint8_t s_row_lit[TRAIL_H];  // 光层这一行有没有不为 0 的格子，合成时整行跳过暗的
+static int16_t s_row_x0[TRAIL_H], s_row_x1[TRAIL_H];  // 有光的那一段 [x0, x1]（格子），衰减和合成只管这段
 static uint8_t s_bg[GFX_H][3];
 static uint8_t s_water[GFX_H][3];
 
@@ -24,6 +25,8 @@ static const uint8_t BAYER[4][4] = {
     {3, 11, 1, 9},
     {15, 7, 13, 5},
 };
+
+static void cjk_init(void);
 
 static void *alloc_fast(size_t n)
 {
@@ -44,6 +47,7 @@ bool gfx_init(void)
     }
     memset(s_trail, 0, TRAIL_W * TRAIL_H * 3);
     memset(gfx_fb, 0, GFX_W * GFX_H * 2);
+    cjk_init();
     for (int v = 0; v < LUT_N; v++) {
         int c = v > 255 ? 255 : v;
         s_lut_r[v] = (uint16_t)((c >> 3) << 11);
@@ -109,13 +113,20 @@ void trail_fade(uint8_t keep)
             continue;
         }
         uint8_t *p = s_trail + y * TRAIL_W * 3;
-        uint8_t any = 0;
-        for (int i = 0; i < TRAIL_W * 3; i++) {
-            uint8_t v = (uint8_t)((p[i] * keep) >> 8);
-            p[i] = v;
-            any |= v;
+        int x0 = -1, x1 = -1;
+        for (int c = s_row_x0[y]; c <= s_row_x1[y]; c++) {
+            uint8_t *q = p + c * 3;
+            q[0] = (uint8_t)((q[0] * keep) >> 8);
+            q[1] = (uint8_t)((q[1] * keep) >> 8);
+            q[2] = (uint8_t)((q[2] * keep) >> 8);
+            if (q[0] | q[1] | q[2]) {
+                if (x0 < 0) x0 = c;
+                x1 = c;
+            }
         }
-        s_row_lit[y] = any != 0;
+        s_row_lit[y] = x0 >= 0;
+        s_row_x0[y] = (int16_t)x0;
+        s_row_x1[y] = (int16_t)x1;
     }
 }
 
@@ -125,7 +136,14 @@ static inline void trail_add(int x, int y, int r, int g, int b)
         return;
     }
     uint8_t *p = s_trail + (y * TRAIL_W + x) * 3;
-    s_row_lit[y] = 1;
+    if (!s_row_lit[y]) {
+        s_row_lit[y] = 1;
+        s_row_x0[y] = s_row_x1[y] = (int16_t)x;
+    } else if (x < s_row_x0[y]) {
+        s_row_x0[y] = (int16_t)x;
+    } else if (x > s_row_x1[y]) {
+        s_row_x1[y] = (int16_t)x;
+    }
     p[0] = (uint8_t)sat(p[0] + r);
     p[1] = (uint8_t)sat(p[1] + g);
     p[2] = (uint8_t)sat(p[2] + b);
@@ -202,8 +220,15 @@ void gfx_compose(int rows)
         }
         const uint8_t *ra = s_trail + k * TRAIL_W * 3;
         const uint8_t *rb = s_trail + yb * TRAIL_W * 3;
+        // 这两行光层有光的范围，左右各多算一格（插值要用到邻格）；范围外直接铺背景
+        int a0 = s_row_lit[k] ? s_row_x0[k] : TRAIL_W, a1 = s_row_lit[k] ? s_row_x1[k] : -1;
+        if (s_row_lit[yb]) {
+            if (s_row_x0[yb] < a0) a0 = s_row_x0[yb];
+            if (s_row_x1[yb] > a1) a1 = s_row_x1[yb];
+        }
+        int c0 = a0 > 0 ? a0 - 1 : 0, c1 = a1 < TRAIL_W - 1 ? a1 + 1 : TRAIL_W - 1;
         int16_t *rw = row + 3;  // 左右各留一格做边界
-        for (int c = 0; c < TRAIL_W; c++) {
+        for (int c = c0; c <= c1; c++) {
             int i = c * 3;
             int16_t r = (int16_t)(ra[i] * 3 + rb[i]);
             int16_t g = (int16_t)(ra[i + 1] * 3 + rb[i + 1]);
@@ -213,10 +238,20 @@ void gfx_compose(int rows)
             rw[i + 2] = b;
             lit[c + 1] = (r | g | b) != 0;
         }
-        memcpy(row, rw, 3 * sizeof(int16_t));                                   // 左边界 = 第 0 格
-        memcpy(rw + TRAIL_W * 3, rw + (TRAIL_W - 1) * 3, 3 * sizeof(int16_t));  // 右边界
-        lit[0] = lit[1];
-        lit[TRAIL_W + 1] = lit[TRAIL_W];
+        if (c0 > 0) {  // 范围外的邻格是 0
+            memset(rw + (c0 - 1) * 3, 0, 3 * sizeof(int16_t));
+            lit[c0] = 0;
+        } else {       // 左边界 = 第 0 格
+            memcpy(row, rw, 3 * sizeof(int16_t));
+            lit[0] = lit[1];
+        }
+        if (c1 < TRAIL_W - 1) {
+            memset(rw + (c1 + 1) * 3, 0, 3 * sizeof(int16_t));
+            lit[c1 + 2] = 0;
+        } else {       // 右边界 = 最后一格
+            memcpy(rw + TRAIL_W * 3, rw + (TRAIL_W - 1) * 3, 3 * sizeof(int16_t));
+            lit[TRAIL_W + 1] = lit[TRAIL_W];
+        }
 
         const uint8_t *bg = s_bg[y];
         const uint8_t *bay = BAYER[y & 3];
@@ -230,7 +265,13 @@ void gfx_compose(int rows)
         }
 
         uint16_t *out = gfx_fb + y * GFX_W;
-        for (int c = 0; c < TRAIL_W; c++) {
+        for (int x = 0; x < c0 * 2; x++) {
+            out[x] = bgp[x & 3];
+        }
+        for (int x = (c1 + 1) * 2; x < GFX_W; x++) {
+            out[x] = bgp[x & 3];
+        }
+        for (int c = c0; c <= c1; c++) {
             int x = c * 2;
             int j = x & 3;  // x 是偶数，所以 j 是 0 或 2，右边那个像素是 j+1
             if (!(lit[c] | lit[c + 1] | lit[c + 2])) {
@@ -348,20 +389,28 @@ void gfx_reflect(int wy, float t)
         uint16_t *dst = gfx_fb + y * GFX_W;
         const uint8_t *wc = s_water[y];
         const uint8_t *bay = BAYER[y & 3];
+        int wr[4], wg[4], wb[4];  // 水色 + 这一列的抖动量
+        for (int j = 0; j < 4; j++) {
+            wr[j] = wc[0] + (bay[j] >> 1);
+            wg[j] = wc[1] + (bay[j] >> 2);
+            wb[j] = wc[2] + (bay[j] >> 1);
+        }
         for (int x = 0; x < GFX_W; x++) {
             int sx = x + off;
             sx = sx < 0 ? 0 : (sx >= GFX_W ? GFX_W - 1 : sx);
-            int r, g, b;
-            unpack(src[sx], &r, &g, &b);
-            dst[x] = pack_dither(wc[0] + ((r * k) >> 8), wc[1] + ((g * k) >> 8),
-                                 wc[2] + ((b * k) >> 8) + ((b * k) >> 10), bay[x & 3]);
+            // 直接拿 5/6 位分量乘：r5*k>>5 约等于 r8*k>>8，省掉展开成 8 位再打包
+            uint16_t p = src[sx];
+            int rr = ((p >> 11) * k) >> 5, gg = (((p >> 5) & 63) * k) >> 6, bb = ((p & 31) * k) >> 5;
+            int j = x & 3;
+            dst[x] = s_lut_r[wr[j] + rr] | s_lut_g[wg[j] + gg] | s_lut_b[wb[j] + bb + (bb >> 2)];
         }
     }
 }
 
 // ---------------------------------------------------------------- 文字
 
-// UTF-8 → 字库槽位。ASCII 原样；扩展字符的顺序和 scripts/gen-fonts.py 的 EXTRA 一致
+// UTF-8 → 主字库槽位。ASCII 原样；扩展字符的顺序和 scripts/gen-fonts.py 的 EXTRA 一致；
+// 主字库没有的返回 -1，去中文后备字库里找
 static int map_cp(int cp)
 {
     switch (cp) {
@@ -369,51 +418,117 @@ static int map_cp(int cp)
     case 0xA5: return 0x80;    // ¥
     case 0xB0: return 0x81;    // °
     case 0x2026: return 0x82;  // …
-    default: return cp < 0x80 ? cp : '?';
+    default: return cp < 0x80 ? cp : -1;
     }
 }
 
+// 解出下一个字符的码位；坏的序列整段跳过，记一个问号
 static int next_char(const char **ps)
 {
     const unsigned char *p = (const unsigned char *)*ps;
-    int cp;
     if (p[0] < 0x80) {
-        cp = p[0];
         *ps += 1;
-    } else if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
-        cp = ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
-        *ps += 2;
-    } else if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
-        cp = ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
-        *ps += 3;
-    } else {
-        // 4 字节序列或者被截断的序列：整段跳过，记一个问号
-        int n = (p[0] & 0xF8) == 0xF0 ? 4 : 1;
-        for (int i = 1; i < n && p[i]; i++) {
-            if ((p[i] & 0xC0) != 0x80) {
-                n = i;
-                break;
-            }
-        }
-        *ps += n;
-        return '?';
+        return p[0];
     }
-    return map_cp(cp);
+    if ((p[0] & 0xE0) == 0xC0 && (p[1] & 0xC0) == 0x80) {
+        *ps += 2;
+        return ((p[0] & 0x1F) << 6) | (p[1] & 0x3F);
+    }
+    if ((p[0] & 0xF0) == 0xE0 && (p[1] & 0xC0) == 0x80 && (p[2] & 0xC0) == 0x80) {
+        *ps += 3;
+        return ((p[0] & 0x0F) << 12) | ((p[1] & 0x3F) << 6) | (p[2] & 0x3F);
+    }
+    int n = (p[0] & 0xF8) == 0xF0 ? 4 : 1;  // 4 字节序列（emoji 之类）或者被截断的序列
+    for (int i = 1; i < n && p[i]; i++) {
+        if ((p[i] & 0xC0) != 0x80) {
+            n = i;
+            break;
+        }
+    }
+    *ps += n;
+    return '?';
 }
 
-static const glyph_t *glyph(const font_t *f, int c)
+// ---- 中文后备字库：scripts/gen-fonts.py 生成的 cjk12.bin，原样嵌在 flash 里 ----
+extern const uint8_t cjk_bin_start[] asm("_binary_cjk12_bin_start");
+
+static struct {
+    int n;
+    uint8_t ascent;
+    const uint8_t *cps;   // u16 × n，升序
+    const uint8_t *recs;  // 10 字节 × n
+    const uint8_t *bmp;
+} s_cjk;
+
+static void cjk_init(void)
 {
-    if (c < f->first || c >= f->first + f->count) {
-        c = '?';
+    const uint8_t *p = cjk_bin_start;
+    if (memcmp(p, "CJK1", 4) != 0) {
+        ESP_LOGW(TAG, "cjk12.bin bad magic, no chinese");
+        return;
     }
-    return &f->g[c - f->first];
+    s_cjk.n = p[4] | (p[5] << 8);
+    s_cjk.ascent = p[7];
+    s_cjk.cps = p + 8;
+    s_cjk.recs = s_cjk.cps + 2 * s_cjk.n;
+    s_cjk.bmp = s_cjk.recs + 10 * s_cjk.n;
+}
+
+static int cjk_find(int cp)
+{
+    int lo = 0, hi = s_cjk.n - 1;
+    while (lo <= hi) {
+        int mid = (lo + hi) >> 1;
+        int v = s_cjk.cps[2 * mid] | (s_cjk.cps[2 * mid + 1] << 8);  // 逐字节读，不要求对齐
+        if (v == cp) return mid;
+        if (v < cp) lo = mid + 1;
+        else hi = mid - 1;
+    }
+    return -1;
+}
+
+// 一个字形，不管来自哪套字库
+typedef struct {
+    const uint8_t *bmp;
+    int w, h, xo, yo, adv;
+} gl_t;
+
+static void resolve(const font_t *f, int cp, gl_t *g)
+{
+    int slot = map_cp(cp);
+    if (slot < 0 && s_cjk.n) {
+        int i = cjk_find(cp);
+        if (i >= 0) {
+            const uint8_t *r = s_cjk.recs + 10 * i;
+            uint32_t off = r[0] | (r[1] << 8) | (r[2] << 16) | ((uint32_t)r[3] << 24);
+            g->bmp = s_cjk.bmp + off;
+            g->w = r[4];
+            g->h = r[5];
+            g->xo = (int8_t)r[6];
+            g->yo = (int8_t)r[7] + (f->ascent - s_cjk.ascent);  // 基线和主字体对齐
+            g->adv = r[8];
+            return;
+        }
+    }
+    if (slot < f->first || slot >= f->first + f->count) {
+        slot = '?';
+    }
+    const glyph_t *gl = &f->g[slot - f->first];
+    g->bmp = f->bmp + gl->off;
+    g->w = gl->w;
+    g->h = gl->h;
+    g->xo = gl->xo;
+    g->yo = gl->yo;
+    g->adv = gl->adv;
 }
 
 int text_width_sp(const font_t *f, const char *s, int sp)
 {
     int w = 0, n = 0;
+    gl_t g;
     while (*s) {
-        w += glyph(f, next_char(&s))->adv;
+        resolve(f, next_char(&s), &g);
+        w += g.adv;
         n++;
     }
     return w + (n > 1 ? (n - 1) * sp : 0);
@@ -427,19 +542,19 @@ int text_width(const font_t *f, const char *s)
 static void draw_glyphs(const font_t *f, int x, int y, const char *s, int sp, uint8_t r, uint8_t g,
                         uint8_t b, int a)
 {
+    gl_t gl;
     while (*s) {
-        const glyph_t *gl = glyph(f, next_char(&s));
-        const uint8_t *bmp = f->bmp + gl->off;
+        resolve(f, next_char(&s), &gl);
         int n = 0;
-        for (int yy = 0; yy < gl->h; yy++) {
-            for (int xx = 0; xx < gl->w; xx++, n++) {
-                int v = (n & 1) ? (bmp[n >> 1] & 0x0F) : (bmp[n >> 1] >> 4);
+        for (int yy = 0; yy < gl.h; yy++) {
+            for (int xx = 0; xx < gl.w; xx++, n++) {
+                int v = (n & 1) ? (gl.bmp[n >> 1] & 0x0F) : (gl.bmp[n >> 1] >> 4);
                 if (v) {
-                    fb_blend(x + gl->xo + xx, y + gl->yo + yy, r, g, b, (v * a * 273) >> 12);  // v*a/15
+                    fb_blend(x + gl.xo + xx, y + gl.yo + yy, r, g, b, (v * a * 273) >> 12);  // v*a/15
                 }
             }
         }
-        x += gl->adv + sp;
+        x += gl.adv + sp;
     }
 }
 

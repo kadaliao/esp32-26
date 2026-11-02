@@ -1,6 +1,7 @@
 #include "shell.h"
 
 #include "app.h"
+#include "board.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,6 +17,8 @@ static const char *TAG = "shell";
 // 新 app：实现一张 app_t，在 app.h 里 extern，再加到这里。顺序就是首页磁贴和左右划的顺序。
 static const app_t *const APPS[] = {&app_sys, &app_magpie, &app_pond, &app_quota};
 #define NAPPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
+#define PER_PAGE 4                                 // 首页一页 2×2
+#define NPAGES ((NAPPS + PER_PAGE - 1) / PER_PAGE)
 
 #define HOME        (-1)
 #define TRANS_S     0.28f    // 切换动画时长
@@ -26,6 +29,9 @@ static const app_t *const APPS[] = {&app_sys, &app_magpie, &app_pond, &app_quota
 #define TILE_GAP    8
 #define N_STARS     60
 #define MAX_RIPPLES 4
+#define DIM_AFTER_MS 120000  // 主机这么久没消息（Mac 睡了 / 没开 deck）……
+#define AWAKE_MS     60000   // ……并且这么久没人碰屏幕，就调暗
+#define DIM_LEVEL    6       // 调暗到的亮度 %
 
 typedef struct {
     float x, y, life;
@@ -39,6 +45,7 @@ typedef struct {
 } star_t;
 
 static int s_cur = HOME;
+static int s_page;               // 首页当前页
 static uint16_t *s_prev;         // 切换前最后一帧（PSRAM），做滑动/淡入淡出
 static float s_tt = 1.0f;        // 切换进度，1 = 没在切
 static int s_tdir;               // +1 新画面从右边滑进来，-1 从左边，0 淡入淡出
@@ -52,6 +59,11 @@ static char s_host[24];
 static int64_t s_switch_ms;
 static bool s_saved = true;
 static ripple_t s_rip[MAX_RIPPLES];
+static uint8_t s_user_bright = 100;  // 主机设的亮度
+static float s_bright = 100;         // 此刻的亮度（渐变）
+static int s_bright_out = 100;       // 上一次真正写给背光的值
+static int64_t s_input_ms;           // 最近一次有人碰屏幕 / 按键
+static bool s_idle;
 static star_t s_star[N_STARS];
 
 // ============================================================ 小工具
@@ -128,12 +140,26 @@ static void switch_to(int idx, int dir)
     if (s_cur != HOME && APPS[s_cur]->leave) {
         APPS[s_cur]->leave();
     }
+    if (idx == HOME && s_cur != HOME) {
+        s_page = s_cur / PER_PAGE;  // 回首页时停在刚才那个 app 所在的页
+    }
     s_cur = idx;
     enter(idx);
     s_dots = idx == HOME ? 0 : DOTS_S;
     s_switch_ms = esp_timer_get_time() / 1000;
     s_saved = false;
     link_printf("!!APP %s\n", shell_current());
+}
+
+// 首页翻页：画面不变，只换磁贴，同样做滑动
+static void flip_page(int d)
+{
+    if (s_prev) {
+        memcpy(s_prev, gfx_fb, GFX_W * GFX_H * 2);
+        s_tt = 0;
+        s_tdir = d;
+    }
+    s_page = (s_page + d + NPAGES) % NPAGES;
 }
 
 // 首页 + 各 app 排成一个环：首页 → app0 → app1 → … → 首页
@@ -221,7 +247,7 @@ void shell_bye(void)
 
 static void tile_rect(int i, int *x, int *y, int *w, int *h)
 {
-    int col = i % 2, row = (i / 2) % 2;
+    int col = i % 2, row = (i / 2) % 2;  // 页内位置：每页 4 个
     *w = (GFX_W - TILE_GAP * 3) / 2;
     *h = (GFX_H - HEADER_H - TILE_GAP * 2) / 2;
     *x = TILE_GAP + col * (*w + TILE_GAP);
@@ -230,7 +256,7 @@ static void tile_rect(int i, int *x, int *y, int *w, int *h)
 
 static int hit_tile(int px, int py)
 {
-    for (int i = 0; i < NAPPS && i < 4; i++) {
+    for (int i = s_page * PER_PAGE; i < NAPPS && i < (s_page + 1) * PER_PAGE; i++) {
         int x, y, w, h;
         tile_rect(i, &x, &y, &w, &h);
         if (px >= x && px < x + w && py >= y && py < y + h) return i;
@@ -315,8 +341,14 @@ static void draw_home(float dt, int64_t now_ms)
 
     int px = 0, py = 0;
     bool touching = input_touching(&px, &py);
-    for (int i = 0; i < NAPPS && i < 4; i++) {
+    for (int i = s_page * PER_PAGE; i < NAPPS && i < (s_page + 1) * PER_PAGE; i++) {
         draw_tile(i, now_ms, px, py, touching);
+    }
+    if (NPAGES > 1) {  // 页码点，放在底边的空隙里
+        for (int p = 0; p < NPAGES; p++) {
+            float a = p == s_page ? 0.9f : 0.3f;
+            fb_disc(GFX_W / 2 + (p - (NPAGES - 1) / 2.0f) * 9, GFX_H - 4, p == s_page ? 2.0f : 1.5f, 200, 210, 255, a);
+        }
     }
     (void)dt;
 }
@@ -363,6 +395,43 @@ static void draw_ripples(float dt)
     }
 }
 
+// ============================================================ 背光
+
+void shell_brightness(uint8_t percent)
+{
+    s_user_bright = percent;
+}
+
+bool shell_idle(void)
+{
+    return s_idle;
+}
+
+static bool dimmed(void)
+{
+    return s_bright < s_user_bright * 0.6f;
+}
+
+static void step_backlight(float dt, int64_t now_ms)
+{
+    int x, y;
+    if (input_touching(&x, &y)) s_input_ms = now_ms;
+    int64_t rx = link_last_rx_ms();
+    bool host_gone = s_bye || now_ms - rx > DIM_AFTER_MS;  // 从没收到过时 rx 是 0：开机两分钟后算
+    bool idle = host_gone && now_ms - s_input_ms > AWAKE_MS;
+    if (idle != s_idle) {
+        ESP_LOGW(TAG, "backlight %s", idle ? "dim (no host, no touch)" : "wake");
+        s_idle = idle;
+    }
+    float target = s_idle ? (s_user_bright < DIM_LEVEL ? s_user_bright : DIM_LEVEL) : s_user_bright;
+    s_bright = approach(s_bright, target, s_idle ? 0.8f : 8.0f, dt);  // 慢慢暗下去，一碰就亮
+    int out = (int)lrintf(s_bright);
+    if (out != s_bright_out) {
+        board_backlight((uint8_t)out);
+        s_bright_out = out;
+    }
+}
+
 // ============================================================ 手势
 
 static const char *ev_name(ev_type_t t)
@@ -376,6 +445,9 @@ static void handle_input(int64_t now_ms)
     input_ev_t ev;
     while (input_take(&ev)) {
         link_printf("!!IN %s %d %d\n", ev_name(ev.type), ev.x, ev.y);  // 主机 -v 时能看到，调触摸方向用
+        bool was_dim = dimmed();
+        s_input_ms = now_ms;
+        if (was_dim) continue;  // 暗着的时候，第一下只负责叫醒
         if (ev.type == EV_TAP) {
             add_ripple(ev.x, ev.y, s_cur == HOME ? RGB(200, 210, 255) : APPS[s_cur]->color);
         }
@@ -392,11 +464,15 @@ static void handle_input(int64_t now_ms)
             }
             break;
         case EV_SWIPE_LEFT:
+        case EV_SWIPE_RIGHT:
+            if (s_cur == HOME && NPAGES > 1) {  // 首页不止一页：左右划是翻页，进 app 靠点
+                flip_page(ev.type == EV_SWIPE_LEFT ? 1 : -1);
+            } else {
+                step_ring(ev.type == EV_SWIPE_LEFT ? 1 : -1);
+            }
+            break;
         case EV_BTN:
             step_ring(+1);
-            break;
-        case EV_SWIPE_RIGHT:
-            step_ring(-1);
             break;
         case EV_SWIPE_UP:
         case EV_SWIPE_DOWN:
@@ -408,7 +484,6 @@ static void handle_input(int64_t now_ms)
             break;
         }
     }
-    (void)now_ms;
 }
 
 // ============================================================ 入口
@@ -443,6 +518,7 @@ void shell_frame(float dt, int64_t now_ms)
 {
     s_t += dt;
     handle_input(now_ms);
+    step_backlight(dt, now_ms);
 
     if (s_cur == HOME) {
         draw_home(dt, now_ms);

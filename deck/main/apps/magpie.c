@@ -12,9 +12,9 @@
 typedef struct {
     char id[16];      // 请求 id（网关里的序号，或日志里的 request id）
     char agent[16];   // 发起方 agent id：claude / codex / dsh ...
-    char aname[20];   // 显示名
+    char aname[48];   // 显示名（可能是中文）
     char prov[20];    // provider id
-    char pname[20];   // provider 显示名
+    char pname[48];   // provider 显示名
     char model[24];
     char aicon[9];    // 图标 key（icons.c 缓存里查）
     char picon[9];
@@ -62,7 +62,7 @@ typedef struct {
 typedef struct {
     bool used;
     char id[20];
-    char name[20];
+    char name[48];
     char icon[9];
     rgb_t col;
     float y, ty;          // 当前 / 目标纵坐标
@@ -561,7 +561,7 @@ static void draw_node(const node_t *n, float x, bool is_agent)
         fb_disc(x, n->y, 1.8f, 255, 255, 255, (0.4f + 0.5f * n->heat) * a);
     }
 
-    char name[28];
+    char name[56];
     snprintf(name, sizeof(name), "%s", n->name[0] ? n->name : n->id);
     text_fit(&font_small, name, sizeof(name), 82);
     int w = text_width(&font_small, name);
@@ -818,7 +818,7 @@ static void magpie_tile(const tile_t *t, int64_t now_ms)
         text_plain(&font_tiny, t->x + w + 5, t->y + 6, s_snap.nfly ? "IN FLIGHT" : "ALL LANDED", 1, 150, 160,
                    205, 210);
         if (s_snap.nfly) {  // 第一只鸟的去向
-            char who[40];
+            char who[104];
             snprintf(who, sizeof(who), "%s > %s", s_snap.fly[0].aname, s_snap.fly[0].pname);
             text_fit(&font_tiny, who, sizeof(who), t->w - 34);
             text_plain(&font_tiny, t->x + w + 5, t->y + 17, who, 0, 130, 140, 185, 190);

@@ -46,6 +46,8 @@ cat > "$PLIST" <<PLISTEOF
         <string>/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>HOME</key>
         <string>$HOME</string>
+        <key>DECK_SERVICE</key>
+        <string>1</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -59,7 +61,12 @@ cat > "$PLIST" <<PLISTEOF
 </plist>
 PLISTEOF
 
+# bootout 是异步的：等老实例真正退出再装，否则 bootstrap 会报 "5: Input/output error"
 launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+for _ in $(seq 50); do
+    launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
+    sleep 0.1
+done
 launchctl bootstrap "gui/$UID" "$PLIST"
 launchctl enable "gui/$UID/$LABEL"
 

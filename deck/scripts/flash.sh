@@ -11,6 +11,10 @@ PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 resume=0
 if launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1; then
     launchctl bootout "gui/$UID/$LABEL" 2>/dev/null || true
+    for _ in $(seq 50); do  # 等它真正退出、松开串口
+        launchctl print "gui/$UID/$LABEL" >/dev/null 2>&1 || break
+        sleep 0.1
+    done
     resume=1
     echo "已暂停常驻服务 $LABEL，烧完会自动恢复"
 fi

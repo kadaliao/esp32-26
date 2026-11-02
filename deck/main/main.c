@@ -22,6 +22,7 @@ static const char *TAG = "main";
 
 #define STRIPE_LINES 24
 #define FRAME_MS     33   // ~30 fps
+#define IDLE_FRAME_MS 100 // 屏幕调暗时 10 fps，省电
 
 static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_dma[2];
@@ -108,7 +109,7 @@ static void render_task(void *arg)
         }
         uint8_t bright;
         if (link_take_brightness(&bright)) {
-            board_backlight(bright);
+            shell_brightness(bright);
         }
 
         int64_t used = esp_timer_get_time() - t0;
@@ -122,7 +123,7 @@ static void render_task(void *arg)
             frames = 0;
             busy_us = 0;
         }
-        int wait = FRAME_MS - (int)(used / 1000);
+        int wait = (shell_idle() ? IDLE_FRAME_MS : FRAME_MS) - (int)(used / 1000);
         vTaskDelay(pdMS_TO_TICKS(wait > 1 ? wait : 1));
     }
 }

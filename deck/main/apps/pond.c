@@ -16,7 +16,7 @@ typedef enum {
 typedef struct {
     char id[12];
     char kind[16];   // claude / codex / gemini / ...
-    char name[24];   // 项目目录名
+    char name[48];   // 项目目录名（可能是中文，一个字 3 字节）
     char tool[16];   // 当前工具名（仅 ST_TOOL）
     uint8_t state;
     uint8_t kids;    // 正在跑的子 agent 数
@@ -52,7 +52,7 @@ typedef struct {
     bool used;
     bool leaving;
     char id[12];
-    char name[24];
+    char name[48];
     char tool[16];
     rgb_t col;
     uint8_t state;
@@ -362,7 +362,7 @@ static void draw_fly_label(const fly_t *f)
     float a = f->vis * (f->state == ST_SLEEP ? 0.45f : 0.95f);
     if (a <= 0.02f) return;
 
-    char name[28];
+    char name[56];
     snprintf(name, sizeof(name), "%s", f->name);
     text_fit(&font_label, name, sizeof(name), 104);
 
@@ -631,7 +631,7 @@ static void pond_tile(const tile_t *t, int64_t now_ms)
         rgb_t sc = a->state == ST_WAIT ? AMBER : (a->state == ST_SLEEP ? RGB(110, 110, 140) : mix(c, WHITE, 0.4f));
         int sw = text_align(&font_tiny, t->x + t->w, y + 3, ALIGN_RIGHT, st, 0, sc.r, sc.g, sc.b, 220);
 
-        char name[28];
+        char name[56];
         snprintf(name, sizeof(name), "%s", a->name);
         text_fit(&font_small, name, sizeof(name), t->w - 16 - sw - 4);
         rgb_t nc = mix(c, WHITE, 0.6f);

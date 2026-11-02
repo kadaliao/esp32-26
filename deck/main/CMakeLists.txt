@@ -3,6 +3,7 @@ idf_component_register(
          "input.c" "shell.c"
          "apps/sys.c" "apps/magpie.c" "apps/pond.c" "apps/quota.c" "apps/logos.c"
     INCLUDE_DIRS "." "apps"
+    EMBED_FILES "cjk12.bin"
     REQUIRES esp_driver_usb_serial_jtag esp_driver_spi esp_driver_i2c esp_driver_ledc esp_driver_gpio
              esp_lcd cjson esp_timer nvs_flash
 )

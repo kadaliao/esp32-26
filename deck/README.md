@@ -42,12 +42,15 @@
 | 操作 | 效果 |
 |---|---|
 | 首页点磁贴 | 打开这个应用（淡入淡出） |
-| 往左划 / 往右划 | 下一个 / 上一个，首页也在这个环里：首页 → SYSTEM → MAGPIE → AGENT POND → AI QUOTA → 首页（滑动动画） |
+| 往左划 / 往右划 | 下一个 / 上一个，首页也在这个环里：首页 → SYSTEM → MAGPIE → AGENT POND → AI QUOTA → 首页（滑动动画）。应用超过 4 个时，首页上左右划是翻页 |
 | 往上或往下划、长按 | 回首页 |
 | 在应用里点一下 | 底部显示页码点，看看自己在第几个 |
 | BOOT 键短按 / 长按 | 下一个 / 回首页（触摸屏坏了也能用） |
 
 断电重启后回到上次停留的那个应用（停留 3 秒以上才记，存在 NVS 里）。
+
+**自动调暗**：主机 2 分钟没消息（Mac 睡了、deck 没在跑）并且 1 分钟没人碰屏幕，背光慢慢降到 6%，帧率降到 10fps；
+一有数据或者摸一下就亮回来。暗着的时候第一下触摸只负责叫醒，不会误点进某个应用。
 
 ## 快速开始
 
@@ -71,7 +74,7 @@ claude plugin install deck-usage@esp32-deck
 
 - 常驻服务跑的是 `~/Library/Application Support/deck` 下的副本，改完 `host/` 要重跑 `install-agent.sh` 才生效。日志在 `~/Library/Logs/deck.log`。
 - `install-agent.sh` 会顺手停掉老项目的常驻服务（`ai-quota-panel`、`agent-pond`），它们会抢同一个串口。
-- `flash.sh` 发现常驻服务在跑会先暂停，烧完自动恢复。
+- `flash.sh` 和前台跑的 `deck.py` 发现常驻服务在跑都会先暂停它（它占着串口），退出时自动恢复。
 - 拔掉板子、串口被占：主机每 2 秒重试，插回来自动接上，magpie 的图标会重发。
 - 依赖：`brew install librsvg imagemagick`（magpie 渲染图标用）。主机端只用 Python 标准库。
 
@@ -177,7 +180,7 @@ class HelloApp:
 
 然后在 `deck.py` 的 `APP_CLASSES` 里加 `("apps.hello", "HelloApp")`。每帧带上 `"t"`（时间）就行，首页顶栏的时钟也会用它。
 
-首页目前是 2×2，只画前 4 个应用的磁贴；第 5 个起还能左右划到，首页分页还没做。
+首页一页 4 个磁贴，第 5 个起自动排到下一页。文字接口吃 UTF-8，中文直接写就行。
 
 ## 串口协议
 
@@ -241,12 +244,16 @@ class HelloApp:
   - 半透明填充改成 RGB565 直接混色（摊开成 `0x07E0F81F` 一次乘完三个通道），
   - 光层按行记录有没有光，暗的行整行跳过，
   - 合成时用查表代替逐像素钳位和打包，
-  - 结果：首页从 18fps 到 30fps。实测各页：首页 / 系统 / 额度约 30fps，magpie 约 28，agent 夜池 8 只萤火虫时约 26。
+  - 光层每行记下有光的那一段，衰减和合成只处理那段，范围外直接铺背景；倒影也改成查表，
+  - 走势线一列一道竖线，不再用抗锯齿粗线，
+  - 结果：首页从 18fps 到 30fps，夜池（8 只萤火虫）从 26 到 30。现在每页都在 29.8fps 左右，每帧 20–28ms（上限 33ms）。
 - 推屏与渲染并行（核 1 渲染，核 0 分条 DMA 推屏），板级参数、截图协议、颜色字节序等坑见 `../ai-subscription-display/README.md`。
-- 字体：`scripts/gen-fonts.py` 栅格化系统字体（Avenir Next、New York Italic、SF Mono、Avenir Next Condensed），4bpp，带 `· ¥ ° …` 几个扩展字符，文字接口吃 UTF-8。
+- 字体：`scripts/gen-fonts.py` 栅格化系统字体（Avenir Next、New York Italic、SF Mono、Avenir Next Condensed），4bpp，带 `· ¥ ° …` 几个扩展字符。
+- 中文：另做一套后备字库 `main/cjk12.bin`（冠黑体 W3 12px，GB2312 的 6763 个汉字 + 常用中文标点，582KB，`EMBED_FILES` 原样放在 flash 里）。
+  主字体里没有的字符二分查找这套字库，按基线对齐画；JSON 里的字符串截断时不会截在半个字上。
 
 ## 已知限制
 
-- 字库没有中文：中文名字会显示成 `?`。系统页对中文 App 名会退回它的可执行文件名（比如 `NeteaseMusic`）。
+- 中文只收了 GB2312 的字，生僻字、繁体、emoji 显示成 `?`。
 - 触摸方向照搬小智 lichuang-dev 的映射（`input.c` 的 `map_xy`），实测点击位置和左右划方向是对的；要是哪天觉得反了，改那一个函数就行。
 - 必须有 Mac 在跑 `deck.py`，数据源都在 Mac 本地。Mac 睡眠后各应用转成「信号丢失」，首页右上角变成 `NO SIGNAL`。

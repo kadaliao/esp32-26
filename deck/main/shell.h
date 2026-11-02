@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "cJSON.h"
 
@@ -14,3 +15,7 @@ void shell_go(const char *id);                // "home" 或某个 app 的 id
 
 // 当前画面的 id（"home" 或 app id）。任何线程都能读
 const char *shell_current(void);
+
+// 背光由壳管：主机设的亮度（@@BRIGHT）是上限；Mac 睡了 / 主机走了、又没人碰屏幕时自动调暗
+void shell_brightness(uint8_t percent);
+bool shell_idle(void);  // 正暗着：渲染可以降帧

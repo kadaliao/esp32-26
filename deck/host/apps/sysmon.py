@@ -474,10 +474,6 @@ def _classify(path: str, argv) -> tuple[str, str]:
     if kind:
         return kind, kind
     if app := _outer_app(path):
-        if not app.isascii():  # 板子字库没有中文：「网易云音乐.app」退回它的可执行文件名
-            m = re.search(re.escape(app) + r"\.app/Contents/MacOS/([^/]+)", path)
-            exe = m.group(1) if m else base
-            app = exe if exe.isascii() else app
         return app, ""
     if base == "Python" and (m := _PY_FW.search(path)):
         return "python" + m.group(1), ""  # Homebrew / python.org 的框架版 Python 实际跑的是 Python.app
