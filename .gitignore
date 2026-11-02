@@ -1,0 +1,14 @@
+# 生成物与第三方代码不参与本项目 lint / 版本管理
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+.host/
+*.png
+__pycache__/
+*.pyc
+.ruff_cache/
+.DS_Store
+.clangd
+HANDOFF.md
