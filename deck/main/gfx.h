@@ -30,8 +30,13 @@ void trail_glow(float x, float y, float radius, uint8_t r, uint8_t g, uint8_t b,
 // 亚像素光点（双线性摊到 4 个格子）
 void trail_dot(float x, float y, uint8_t r, uint8_t g, uint8_t b, float intensity);
 
+// 直接往光层的某一格加光（格子坐标，TRAIL_W × TRAIL_H，加色、饱和）
+void trail_put(int cx, int cy, int r, int g, int b);
+
 // 背景 + 光层 合成到 fb 的 [0, rows) 行，带 4x4 有序抖动
 void gfx_compose(int rows);
+// 同上，但底图换成一张整屏 RGB565 小端图（比如摄像头画面），先按 bright/32 压暗再叠光层
+void gfx_compose_img(const uint16_t *img, int bright);
 
 // ---- 直接画到 fb ----
 void fb_add(int x, int y, int r, int g, int b);                 // 加色

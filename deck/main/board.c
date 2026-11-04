@@ -93,7 +93,8 @@ static esp_err_t i2c_and_expander_init(void)
 
     // 与官方固件一致：bit0/1/2 为输出，其余为输入；初始 bit0=1(断电) bit1=1 bit2=0
     ESP_RETURN_ON_ERROR(pca_write(PCA9557_REG_CFG, 0xF8), TAG, "pca cfg");
-    ESP_RETURN_ON_ERROR(pca_write(PCA9557_REG_OUT, 0x03), TAG, "pca out");
+    // 屏幕先不上电、功放使能、摄像头断电（用到时 board_camera_power 再开）
+    ESP_RETURN_ON_ERROR(pca_write(PCA9557_REG_OUT, 0x07), TAG, "pca out");
     return ESP_OK;
 }
 
@@ -118,6 +119,11 @@ static esp_err_t backlight_init(void)
     };
     ESP_RETURN_ON_ERROR(ledc_channel_config(&c), TAG, "ledc chan");
     return ESP_OK;
+}
+
+void board_camera_power(bool on)
+{
+    pca_set_bit(2, on ? 0 : 1);
 }
 
 void board_backlight(uint8_t percent)

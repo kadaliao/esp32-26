@@ -1,7 +1,7 @@
 # deck：我的桌面小面板（立创·实战派 ESP32-S3）
 
 2 寸屏上的一个「桌面」：首页是一排磁贴，每个磁贴是一个小应用，点进去全屏看，左右划切换。
-之前的三个项目都变成了这里的应用，再加一个新写的系统监控。**一套固件、一个主机进程**，
+之前的三个项目都变成了这里的应用，再加一个新写的系统监控，以及两个用摄像头的：一面镜子、一张会看你的卡通脸。**一套固件、一个主机进程**，
 不用再为了换项目重新烧录。
 
 ```
@@ -26,6 +26,8 @@
 | **MAGPIE** | magpie 网关的实时请求：每个请求是一只喜鹊，从 agent 飞到 provider 再飞回来（原 magpie-live） | magpie 网关只读接口 |
 | **AGENT POND** | 本机正在跑的 coding agent，画成一池萤火虫（原 agent-pond） | `~/.claude`、`~/.codex` 的会话文件 + 进程表 |
 | **AI QUOTA** | Claude / Codex / DeepSeek / Grok… 的订阅额度、重置倒计时、余额（原 ai-subscription-display，从 LVGL 改画到共用渲染器上）；家数多了自动压成一家一行 | magpie 网关 + Claude Code 自己的本地缓存（见下文，不跑 `/usage`） |
+| **MIRROR** | 板载摄像头的镜子，点一下换效果：光绘、字符雨、吉卜力…（见「MIRROR：摄像头镜子」） | 板子自己的摄像头；GHIBLI 效果在 Mac 上画 |
+| **EYES** | 一张会看你的卡通脸：跟着你的脸转，没人时自己找事干、犯困、睡着，你回来会笑（见「EYES：一张会看你的卡通脸」） | 摄像头 + 板上跑的人脸检测，不用 Mac |
 
 磁贴里是实时的迷你预览，不用点进去也能看个大概。某个应用的数据超过 15 秒没更新，磁贴会压暗并标 `STALE`。
 
@@ -42,7 +44,7 @@
 | 操作 | 效果 |
 |---|---|
 | 首页点磁贴 | 打开这个应用（淡入淡出） |
-| 往左划 / 往右划 | 下一个 / 上一个，首页也在这个环里：首页 → SYSTEM → MAGPIE → AGENT POND → AI QUOTA → 首页（滑动动画）。应用超过 4 个时，首页上左右划是翻页 |
+| 往左划 / 往右划 | 下一个 / 上一个，首页也在这个环里：首页 → SYSTEM → MAGPIE → AGENT POND → AI QUOTA → MIRROR → EYES → 首页（滑动动画）。应用超过 4 个时，首页上左右划是翻页 |
 | 往上或往下划、长按 | 回首页 |
 | 在应用里点一下 | 底部显示页码点，看看自己在第几个 |
 | BOOT 键短按 / 长按 | 下一个 / 回首页（触摸屏坏了也能用） |
@@ -61,7 +63,7 @@ python3 host/deck.py                     # 前台推送（Ctrl-C 停，退出前
 python3 host/deck.py --demo              # 全部用假数据
 python3 host/deck.py --once              # 不连板子，每个应用打印一帧 JSON
 python3 host/deck.py --only sys,magpie   # 只跑其中几个
-python3 host/deck.py --go sys            # 连上后切到某个应用（home / sys / magpie / pond / quota）
+python3 host/deck.py --go sys            # 连上后切到某个应用（home / sys / magpie / pond / quota / mirror / eyes）
 python3 host/deck.py --go sys --shot a.png   # 推几秒数据后截屏（不用拍照）
 python3 host/deck.py -v                  # 同时打印板子日志、帧率、触摸手势
 
@@ -76,7 +78,8 @@ claude plugin install deck-usage@esp32-deck
 - `install-agent.sh` 会顺手停掉老项目的常驻服务（`ai-quota-panel`、`agent-pond`），它们会抢同一个串口。
 - `flash.sh` 和前台跑的 `deck.py` 发现常驻服务在跑都会先暂停它（它占着串口），退出时自动恢复。
 - 拔掉板子、串口被占：主机每 2 秒重试，插回来自动接上，magpie 的图标会重发。
-- 依赖：`brew install librsvg imagemagick`（magpie 渲染图标用）。主机端只用 Python 标准库。
+- 依赖：`brew install librsvg imagemagick`（magpie 渲染图标用）。主机端只用 Python 标准库；
+  MIRROR 的 GHIBLI 效果另外要 `brew install uv`（推理子进程的依赖由 uv 自己装）。
 
 ## 结构
 
@@ -100,12 +103,16 @@ deck/
 │   ├── link.c             串口协议
 │   ├── input.c            触摸 + BOOT 键 → 点击 / 长按 / 四向滑动
 │   ├── gfx.c              渲染器：光层拖尾 + 合成 + 抖动、文字、矩形、遮罩
+│   ├── lens.c             摄像头（GC0308）：上电 / 断电、取帧、亮度图和帧差（核 0）
+│   ├── face.cpp           人脸检测（ESP-DL human_face_detect），核 0 的低优先级任务
+│   ├── relay.c            GHIBLI：摄像头画面编 JPEG 送 Mac、收回画好的画面解码（核 0 编、核 1 解）
 │   ├── util.h             颜色、插值、随机数、取 JSON 字段
-│   └── apps/              sys.c  magpie.c  pond.c  quota.c  logos.c
+│   └── apps/              sys.c  magpie.c  pond.c  quota.c  mirror.c  eyes.c  logos.c
 ├── host/
 │   ├── deck.py            主程序：调度、串口、截图、退出时 BYE
 │   ├── board.py           串口、找设备、组帧、截图解码
-│   └── apps/              sysmon.py  magpie.py  pond.py  quota.py
+│   ├── apps/              sysmon.py  magpie.py  pond.py  quota.py  ghibli.py
+│   └── ghibli/worker.py   吉卜力风格推理子进程（uv run --script，依赖写在文件头）
 ├── claude-mod/            deck-usage：把 Claude Code 收到的额度读数写进缓存文件的小 mod
 └── scripts/               flash.sh  install-agent.sh  gen-fonts.py  gen-logos.sh  gen-logo.py
 ```
@@ -157,6 +164,8 @@ const app_t app_hello = {
 然后：`app.h` 里加 `extern const app_t app_hello;`，`shell.c` 的 `APPS[]` 里加 `&app_hello`，
 `main/CMakeLists.txt` 的 `SRCS` 里加 `"apps/hello.c"`。可选的回调还有 `bye`（主机退出）、
 `leave`、`input`（手势，返回 true 表示自己处理了）、`badge`（角标）。
+用摄像头、不靠主机数据的应用设 `.camera = true`：磁贴不等 Mac、不变 STALE，重启后也不会自动回到它。
+画面本来就更新得慢的应用可以在进场时 `shell_want_fps(15)`，省下 CPU 和 PSRAM 带宽（切换动画、点击水波纹时壳会自动回到 30fps）。
 
 **主机** `host/apps/hello.py`：
 
@@ -180,7 +189,81 @@ class HelloApp:
 
 然后在 `deck.py` 的 `APP_CLASSES` 里加 `("apps.hello", "HelloApp")`。每帧带上 `"t"`（时间）就行，首页顶栏的时钟也会用它。
 
+不是定时取数据、而是「来一帧处理一帧」的 app（比如 `apps/ghibli.py`）：不写 `poll`，改写 `bin_tags = ("cam",)`、
+`on_bin(tag, data)`（板子发来的二进制帧）和 `start(outbox, stop, log)`（自己开线程，结果直接 `outbox.put(id, [bytes])`）。
+
 首页一页 4 个磁贴，第 5 个起自动排到下一页。文字接口吃 UTF-8，中文直接写就行。
+
+## MIRROR：摄像头镜子
+
+板载的 GC0308（30 万像素）出 320×240，正好铺满屏。点一下换效果：
+
+| 效果 | 看到的 |
+|---|---|
+| LIGHT PAINT | 画面压暗，哪里在动哪里就留下彩色光尾，挥手能画出一道彩虹 |
+| MATRIX | 字符雨：屏幕切成 40×24 个字符格，每列一道往下掉的雨（字是镜像的）。画面亮的地方字也亮，人从字里浮出来 |
+| GHIBLI | 吉卜力风格：画面送到 Mac 上用宫崎骏风格的模型重画一遍再送回来（见下一节） |
+| GHOST | 只有动的地方发光，站着不动就隐身 |
+| NEON | 只剩轮廓线，按行渐变的霓虹色 |
+| PLAIN | 普通镜子 |
+
+- **摄像头只在 MIRROR 在前台时上电**，切走就断电（PCA9557 的 bit2）。除了 GHIBLI，画面都不出板子，主机端不需要跑任何东西。
+  断电重启后也不会自动回到 MIRROR，免得一开机摄像头就亮。
+- 主机想切效果可以发 `@@mirror{"fx":"matrix"}`（`paint` / `matrix` / `ghibli` / `ghost` / `neon` / `plain`）。
+- 在镜头前挥手也算「有人」，和碰屏幕一样推迟自动调暗。
+- 帧率：摄像头 26.7fps，渲染 30fps；光绘、幽灵模式下大幅度挥手、满屏光尾时会掉到 24–27fps（光层合成是逐像素的，满屏时最贵）。
+
+实现：`lens.c` 在核 0 开一个任务取帧，一趟走完把传感器的大端 RGB565 换成小端、算出 160×120 的亮度图和帧差，
+几块缓冲轮换交给读者（渲染线程、送去 Mac 的 relay 任务各占一块），互不等待。帧差、亮度图正好和光层同分辨率，光绘就是把帧差直接写进光层；
+摄像头底图用 `gfx_compose_img` 合成（压暗和叠光一趟做完，图从 PSRAM 只读一次）。
+引脚和小智 lichuang-dev 一致，SCCB 复用触摸芯片那条 I2C1，驱动是 `espressif/esp32-camera`（sdkconfig 里只开了 GC0308 的探测）。
+
+### GHIBLI：在 Mac 上画，回显到板子
+
+```
+板子 relay_enc（核 0）          USB 串口              Mac：deck.py → apps/ghibli.py
+摄像头最新一帧 → JPEG ── !!BIN cam <len> + JPEG ──▶  交给推理子进程（uv run --script ghibli/worker.py）
+                                                     AnimeGANv3 Hayao（宫崎骏风格），onnxruntime CPU
+屏幕 ◀ RGB565 ◀ JPEG ◀─ @@BIN fx <len> + JPEG ────  320×240 JPEG
+       relay_dec（核 1，优先级比渲染低）
+```
+
+- 模型是 [AnimeGANv3](https://github.com/TachibanaYoshino/AnimeGANv3) 发布页的 `AnimeGANv3_Hayao_36.onnx`（4.2MB），
+  第一次用时下载到 `~/Library/Caches/deck/models/` 并校验 sha256。这个项目没写许可证、README 说非商用，自己玩没问题。
+- `worker.py` 的依赖（onnxruntime、numpy、pillow）写在文件头的 PEP 723 元数据里，`uv run --script` 自动装进 uv 的缓存环境，
+  **deck.py 本身还是只用标准库**。要先 `brew install uv`；第一次切到 GHIBLI 要等十几秒（装依赖、下模型），之后一两秒就起来。
+  30 秒没有画面过来就把子进程停掉。
+- 速度（M1 Max）：约 7fps，从拍到显示约 350ms。三段大致相当：板子编 JPEG 约 75ms、Mac 推理 85–110ms（8 个性能核满载）、
+  板子解码约 35ms；最多同时 2 帧在路上，让 USB 传输和 Mac 推理重叠。这段时间屏幕只刷 15fps（`shell_want_fps`），
+  省下的 PSRAM 带宽和核 0 时间给编码用——编码从 120ms 降到 75ms。
+- **它会让 Mac 的性能核一直满载**：5 分钟没人碰屏幕、或者屏幕自动调暗了就暂停（点一下继续）。
+- **这个效果的画面会离开板子**，送到这台 Mac 上的 deck.py（不出本机）。Mac 没响应时显示压暗的原画面和提示。
+
+## EYES：一张会看你的卡通脸
+
+整块屏幕是脸：暖色的底，白眼球描墨线，大瞳孔（上深下浅的琥珀色渐变）带两个高光，眉毛、腮红、会变形的嘴。
+
+| 情况 | 表情 |
+|---|---|
+| 看到你的脸 | 盯着你转，瞳孔放大；偶尔冲你眨一只眼。凑太近会瞪大眼、嘴变成 O |
+| 没看到脸 | 看画面里在动的东西，什么都没有就自己找事干：东张西望、挑一边眉毛好奇、嘟嘴吹口哨 |
+| 没人 25 秒 | 犯困：眼皮半垂、眨得又慢又少，隔一阵打个哈欠 |
+| 没人 45 秒 | 睡着：眼睛闭成 ‿‿，冒 z。画面里有大动静会把它吵醒 |
+| 你离开超过 5 秒又回来、或者把它吵醒 | ^^ 笑眼，咧嘴笑，脸红，蹦一下 |
+| 点一下屏幕 | >_<，脸红，蹦一下 |
+
+- 动起来不呆板靠这几样：视线和整张脸的位置都是弹簧（转过去会稍微过冲再回来）；脸跟着视线平移一点、带呼吸起伏；
+  盯着你时瞳孔有细微的抖动；眨眼时眼睛略微变宽（挤压拉伸）；表情全是连续量，换表情是渐变过去的，嘴型交叉淡入。
+- 摄像头和人脸检测都只在 EYES 在前台时开，和 MIRROR 一样画面不出板子。看到脸时算「有人」，不会自动调暗。
+- 主机可以发 `@@eyes{"poke":1}`（戳一下）、`{"greet":1}`（打招呼）、`{"nap":1}`（马上睡）、`{"debug":1}`（左上角画出人脸框，底下一行状态和检测耗时）。
+- 人脸检测用乐鑫 ESP-DL 的 `human_face_detect`（MSR + MNP 两级模型，约 190KB，放在 flash 里）。
+  `lens.c` 处理每帧时，检测器空闲就顺手写一张 160×120 的彩色图给它（正好是模型第一级的输入，不用再缩放）；
+  检测在核 0 的低优先级任务里跑，最多每秒 6 次左右，实际一次 160–180ms（核 0 上推屏、取帧优先），对眼睛够用。
+  模型第一次用时才加载，离开 EYES 就释放（它占一块内部 RAM，摄像头和 GHIBLI 的编解码器都要用）。
+- 画法：眼白是圆角矩形的距离场，和上下眼皮（抛物线）取交集，外面一圈墨线。上眼皮合到底，剩下的墨线就是闭眼的 ‿；
+  下眼皮顶到头就是笑眼的 ⌒（剩下的月牙涂成墨色）。为了跑满 30fps：只有圆角和边缘才逐像素算距离场，
+  每行整块在眼白里、又在虹膜范围外的那段直接写白；S3 的浮点单元没有开方指令，用平方根倒数的位运算 + 牛顿迭代代替 `sqrtf`。
+  每帧约 28ms（两只眼睛 13ms）。
 
 ## 串口协议
 
@@ -196,9 +279,12 @@ class HelloApp:
 | `@@BYE` | 主机要退出了：每个应用都转成「已停止」 |
 | `@@HELLO` | 板子回 `!!HELLO deck 1 <当前画面> touch=<0/1>` |
 | `@@SHOT` / `@@PING` / `@@BRIGHT 0-100` | 截图 / `!!PONG` / 背光 |
+| `@@BIN <tag> <len>` + len 个原始字节 | 二进制帧，固件里用 `link_on_bin(tag, cb)` 收（GHIBLI 画好的画面是 `fx`）。最大 160KB |
 
 板子 → 主机：`!!APP <id>`（切屏了）、`!!IN <tap/long/left/right/up/down/btn/btnlong> x y`（手势）、
-`!!SHOT w h len` + `!!DATA <hex>`… + `!!SHOTEND`（截图，RLE），以及 WARN 级日志（帧率每 10 秒一行）。
+`!!SHOT w h len` + `!!DATA <hex>`… + `!!SHOTEND`（截图，RLE）、`!!BIN <tag> <len>` + 原始字节（`link_write_bin`，摄像头画面是 `cam`），
+以及 WARN 级日志（帧率每 10 秒一行）。写串口有一把锁，二进制帧的头和数据中间不会插进日志；日志碰上锁被占着就直接丢掉，不阻塞。
+主机端 `board.Serial.readline` 读到 `!!BIN` 头会把数据收齐放进 `ser.bins`，deck.py 再交给声明了这个 tag 的 app。
 
 各应用的帧格式：`sys` 见 `host/apps/sysmon.py` 开头；`magpie`、`pond`、`quota` 和原项目一样，
 见 `../magpie-live`、`../agent-pond`、`../ai-subscription-display` 的 README。
@@ -248,6 +334,13 @@ class HelloApp:
   - 走势线一列一道竖线，不再用抗锯齿粗线，
   - 结果：首页从 18fps 到 30fps，夜池（8 只萤火虫）从 26 到 30。现在每页都在 29.8fps 左右，每帧 20–28ms（上限 33ms）。
 - 推屏与渲染并行（核 1 渲染，核 0 分条 DMA 推屏），板级参数、截图协议、颜色字节序等坑见 `../ai-subscription-display/README.md`。
+- 内部 RAM 很挤（这块板子的大头都在 PSRAM）：摄像头 DMA 一块限 16KB（`CONFIG_CAMERA_DMA_BUFFER_SIZE_MAX`），
+  GHIBLI 的 JPEG 编码器 / 解码器（约 39KB / 9KB）只在用的时候开、而且等摄像头先起来再开，人脸模型离开 EYES 就释放，
+  relay 的两个任务栈放在 PSRAM。来回切 MIRROR / GHIBLI / EYES，内部 RAM 每轮都回到同样的数。
+- USB-Serial-JTAG 的坑：驱动的发送环形缓冲只有 4KB，一次写超过它的长度会永远写不进去（返回 0），所以 `link.c` 每次最多写 1KB。
+  实测两个方向都约 840KB/s。
+- 整屏缓冲其实在 PSRAM 里：内部 RAM 最大的连续块只有 90 多 KB，放不下 150KB（开机日志会打 `fell back to PSRAM`）。
+  所以数据缓存开到 64KB、行长 64B（`sdkconfig.defaults`），每帧拷进推屏缓冲那一步从 9–11ms 降到约 6.7ms，各页都受益。
 - 字体：`scripts/gen-fonts.py` 栅格化系统字体（Avenir Next、New York Italic、SF Mono、Avenir Next Condensed），4bpp，带 `· ¥ ° …` 几个扩展字符。
 - 中文：另做一套后备字库 `main/cjk12.bin`（冠黑体 W3 12px，GB2312 的 6763 个汉字 + 常用中文标点，582KB，`EMBED_FILES` 原样放在 flash 里）。
   主字体里没有的字符二分查找这套字库，按基线对齐画；JSON 里的字符串截断时不会截在半个字上。
@@ -256,4 +349,6 @@ class HelloApp:
 
 - 中文只收了 GB2312 的字，生僻字、繁体、emoji 显示成 `?`。
 - 触摸方向照搬小智 lichuang-dev 的映射（`input.c` 的 `map_xy`），实测点击位置和左右划方向是对的；要是哪天觉得反了，改那一个函数就行。
-- 必须有 Mac 在跑 `deck.py`，数据源都在 Mac 本地。Mac 睡眠后各应用转成「信号丢失」，首页右上角变成 `NO SIGNAL`。
+- 必须有 Mac 在跑 `deck.py`，数据源都在 Mac 本地（MIRROR、EYES 除外，但 MIRROR 的 GHIBLI 要 Mac）。Mac 睡眠后各应用转成「信号丢失」，首页右上角变成 `NO SIGNAL`。
+- 摄像头 30 万像素，近处看得清，远处和暗处噪点多；字符雨只有 40×24 格，人要离近一点才认得出轮廓。
+- 人脸检测要正脸、光线够；侧脸、背光、离得远时会时有时无（EYES 会把视线保持 1.2 秒，短暂丢失看不出来）。

@@ -15,7 +15,7 @@ static const char *TAG = "shell";
 
 // ============================================================ 登记表
 // 新 app：实现一张 app_t，在 app.h 里 extern，再加到这里。顺序就是首页磁贴和左右划的顺序。
-static const app_t *const APPS[] = {&app_sys, &app_magpie, &app_pond, &app_quota};
+static const app_t *const APPS[] = {&app_sys, &app_magpie, &app_pond, &app_quota, &app_mirror, &app_eyes};
 #define NAPPS ((int)(sizeof(APPS) / sizeof(APPS[0])))
 #define PER_PAGE 4                                 // 首页一页 2×2
 #define NPAGES ((NAPPS + PER_PAGE - 1) / PER_PAGE)
@@ -58,6 +58,7 @@ static char s_date[16];
 static char s_host[24];
 static int64_t s_switch_ms;
 static bool s_saved = true;
+static int s_want_fps;           // 当前 app 想要的帧率，0 = 默认
 static ripple_t s_rip[MAX_RIPPLES];
 static uint8_t s_user_bright = 100;  // 主机设的亮度
 static float s_bright = 100;         // 此刻的亮度（渐变）
@@ -140,6 +141,7 @@ static void switch_to(int idx, int dir)
     if (s_cur != HOME && APPS[s_cur]->leave) {
         APPS[s_cur]->leave();
     }
+    s_want_fps = 0;  // 帧率要求是每个 app 自己的，进场时再要
     if (idx == HOME && s_cur != HOME) {
         s_page = s_cur / PER_PAGE;  // 回首页时停在刚才那个 app 所在的页
     }
@@ -278,7 +280,7 @@ static void draw_tile(int i, int64_t now_ms, int px, int py, bool touching)
     const app_t *a = APPS[i];
     int x, y, w, h;
     tile_rect(i, &x, &y, &w, &h);
-    bool fresh = s_recv[i] && now_ms - s_recv[i] < STALE_MS;
+    bool fresh = a->camera || (s_recv[i] && now_ms - s_recv[i] < STALE_MS);
     int badge = a->badge && fresh ? a->badge(now_ms) : 0;
     bool pressed = touching && px >= x && px < x + w && py >= y && py < y + h;
     rgb_t c = a->color;
@@ -296,7 +298,7 @@ static void draw_tile(int i, int64_t now_ms, int px, int py, bool touching)
     }
 
     tile_t t = {x + 8, y + 20, w - 16, h - 26, s_t};
-    if (s_recv[i] == 0) {
+    if (s_recv[i] == 0 && !a->camera) {
         text_align(&font_small, x + w / 2, y + h / 2 - 2, ALIGN_CENTER, "waiting for the mac", 0,
                    120, 120, 160, (int)(140 + 60 * sinf(s_t * 1.5f)));
     } else if (a->tile) {
@@ -405,6 +407,24 @@ void shell_brightness(uint8_t percent)
 bool shell_idle(void)
 {
     return s_idle;
+}
+
+void shell_want_fps(int fps)
+{
+    s_want_fps = fps;
+}
+
+int shell_frame_ms(void)
+{
+    if (s_idle) return 100;  // 暗着：10fps 省电
+    bool busy = s_tt < 1.0f || s_dots > 0;
+    for (int i = 0; i < MAX_RIPPLES && !busy; i++) busy = s_rip[i].life > 0;
+    return s_want_fps > 0 && !busy ? 1000 / s_want_fps : 33;
+}
+
+void shell_wake(int64_t now_ms)
+{
+    s_input_ms = now_ms;
 }
 
 static bool dimmed(void)
@@ -537,6 +557,9 @@ void shell_frame(float dt, int64_t now_ms)
     draw_ripples(dt);
 
     if (!s_saved && now_ms - s_switch_ms > SAVE_MS) {
-        save_last();
+        if (s_cur == HOME || !APPS[s_cur]->camera) {
+            save_last();
+        }
+        s_saved = true;
     }
 }

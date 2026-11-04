@@ -7,7 +7,9 @@
     @@sys{...}  @@magpie{...}  @@pond{...}  @@quota{...}   给各个 app
     @@deck{"t":"14:32","d":"SUN 02 NOV","h":"..."}         给面板自己（首页顶栏）
     @@ICON ...                                             magpie 的图标
+    @@BIN fx <len> + JPEG                                  GHIBLI 画好的画面
 
+板子发来的二进制帧（!!BIN cam … 摄像头画面）交给声明了 bin_tags 的 app。
 某个 app 卡住或报错只影响它自己的磁贴（变成 STALE），别的照常。
 
 用法：
@@ -15,7 +17,7 @@
     python3 host/deck.py --demo           全部用假数据
     python3 host/deck.py --once           不连板子，每个 app 打印一帧
     python3 host/deck.py --only sys,magpie
-    python3 host/deck.py --go sys         连上后切到某个 app（home / sys / magpie / pond / quota）
+    python3 host/deck.py --go sys         连上后切到某个 app（home / sys / magpie / pond / quota / mirror / eyes）
     python3 host/deck.py --shot a.png --go sys   推几秒数据后截屏
     python3 host/deck.py -v               同时打印板子日志和触摸手势
 """
@@ -42,6 +44,7 @@ APP_CLASSES = [
     ("apps.magpie", "MagpieApp"),
     ("apps.pond", "PondApp"),
     ("apps.quota", "QuotaApp"),
+    ("apps.ghibli", "GhibliApp"),
 ]
 
 
@@ -175,7 +178,11 @@ def run(args, apps: list) -> int:
     outbox = Outbox()
     stop = threading.Event()
     for a in apps:
-        Feeder(a, args.demo, outbox, stop, args.verbose).start()
+        if hasattr(a, "poll"):  # 定时取数据的 app
+            Feeder(a, args.demo, outbox, stop, args.verbose).start()
+        if hasattr(a, "start"):  # 自己管线程的 app（比如 GHIBLI：来一帧画一帧）
+            a.start(outbox, stop, log)
+    bin_apps = {tag: a for a in apps for tag in getattr(a, "bin_tags", ())}
 
     host = host_label()
     ser: Serial | None = None
@@ -229,6 +236,10 @@ def run(args, apps: list) -> int:
                             raise OSError("写串口超时")
                 while (line := ser.readline(0)) is not None:
                     on_board(line)
+                while ser.bins:  # 板子发来的二进制帧（摄像头画面）
+                    tag, data = ser.bins.popleft()
+                    if tag in bin_apps:
+                        bin_apps[tag].on_bin(tag, data)
 
                 if shot_at is not None and now >= shot_at:
                     if args.go:  # 等的这几秒里可能有人点过屏幕：截之前再切一次，等淡入淡出走完
@@ -290,6 +301,8 @@ def main() -> int:
 
     if args.once:
         for a in apps:
+            if not hasattr(a, "poll"):
+                continue
             # 有的数据（CPU、网速）要两次采样才算得出速率
             frame = a.demo() if args.demo else a.poll()
             if not args.demo and a.interval <= 1.0:

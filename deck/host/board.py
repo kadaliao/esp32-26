@@ -4,6 +4,7 @@
 """
 from __future__ import annotations
 
+import collections
 import glob
 import json
 import os
@@ -28,6 +29,7 @@ class Serial:
         attrs[4] = attrs[5] = termios.B115200
         termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
         self._buf = b""
+        self.bins: collections.deque[tuple[str, bytes]] = collections.deque(maxlen=8)  # 收到的二进制帧
 
     def write(self, data: bytes, timeout: float = 2.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -42,12 +44,20 @@ class Serial:
         return True
 
     def readline(self, timeout: float) -> str | None:
-        """读一行。内部保留缓冲，一次 read 拿到的多行不会被丢掉。timeout=0 就是只看缓冲和已到的数据。"""
+        """读一行。内部保留缓冲，一次 read 拿到的多行不会被丢掉。timeout=0 就是只看缓冲和已到的数据。
+        遇到二进制帧（"!!BIN <tag> <len>" + len 个原始字节）时把数据收齐放进 self.bins，返回那行头。"""
         deadline = time.monotonic() + timeout
         while True:
             if b"\n" in self._buf:
                 line, self._buf = self._buf.split(b"\n", 1)
-                return line.decode("utf-8", "replace")
+                text = line.decode("utf-8", "replace")
+                if text.startswith("!!BIN "):
+                    parts = text.split()
+                    if len(parts) == 3 and parts[2].isdigit():
+                        data = self._read_exact(int(parts[2]), 5.0)
+                        if data is not None:
+                            self.bins.append((parts[1], data))
+                return text
             remain = max(0.0, deadline - time.monotonic())
             r, _, _ = select.select([self.fd], [], [], min(remain, 0.2))
             if r:
@@ -60,6 +70,22 @@ class Serial:
                 self._buf += chunk
             elif remain <= 0:
                 return None
+
+    def _read_exact(self, n: int, timeout: float) -> bytes | None:
+        deadline = time.monotonic() + timeout
+        while len(self._buf) < n:
+            remain = deadline - time.monotonic()
+            if remain <= 0:
+                self._buf = b""  # 半截帧：丢掉，等下一个换行重新对齐
+                return None
+            r, _, _ = select.select([self.fd], [], [], min(remain, 0.2))
+            if r:
+                try:
+                    self._buf += os.read(self.fd, 65536)
+                except BlockingIOError:
+                    pass
+        data, self._buf = self._buf[:n], self._buf[n:]
+        return data
 
     def drain(self) -> None:
         self._buf = b""

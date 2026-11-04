@@ -32,8 +32,9 @@ static void *alloc_fast(size_t n)
 {
     void *p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
     if (!p) {
+        ESP_LOGW(TAG, "%u bytes fell back to PSRAM (largest internal block %u)", (unsigned)n,
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
         p = heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        ESP_LOGW(TAG, "%u bytes fell back to PSRAM", (unsigned)n);
     }
     return p;
 }
@@ -149,6 +150,11 @@ static inline void trail_add(int x, int y, int r, int g, int b)
     p[2] = (uint8_t)sat(p[2] + b);
 }
 
+void trail_put(int cx, int cy, int r, int g, int b)
+{
+    trail_add(cx, cy, r, g, b);
+}
+
 void trail_glow(float x, float y, float radius, uint8_t r, uint8_t g, uint8_t b, float intensity)
 {
     // 换到半分辨率坐标
@@ -187,21 +193,69 @@ void trail_dot(float x, float y, uint8_t r, uint8_t g, uint8_t b, float intensit
 
 // ---------------------------------------------------------------- 合成
 
+// 放大规则（每个半分辨率格子 c 对应整屏像素 2c、2c+1）：
+//   像素 2c   = (3*P[c] + P[c-1]) / 4
+//   像素 2c+1 = (3*P[c] + P[c+1]) / 4
+// 纵向同理。trail_row 先做纵向那一半：把整屏第 y 行对应的两行光层按 3:1 合成一行，
+// 放进 s_row（左右各留一格做边界），s_lit[c + 1] 表示第 c 格有没有光。
+// 只算有光的那段 [c0, c1]（已经各多算一格，插值要用到邻格）。整行没光返回 false。
+static int16_t s_row[(TRAIL_W + 2) * 3];
+static uint8_t s_lit[TRAIL_W + 2];
+
+static inline bool trail_row(int y, int *c0o, int *c1o)
+{
+    int k = y >> 1;
+    int yb = (y & 1) ? (k + 1 < TRAIL_H ? k + 1 : k) : (k > 0 ? k - 1 : 0);
+    if (!s_row_lit[k] && !s_row_lit[yb]) {
+        return false;
+    }
+    const uint8_t *ra = s_trail + k * TRAIL_W * 3;
+    const uint8_t *rb = s_trail + yb * TRAIL_W * 3;
+    int a0 = s_row_lit[k] ? s_row_x0[k] : TRAIL_W, a1 = s_row_lit[k] ? s_row_x1[k] : -1;
+    if (s_row_lit[yb]) {
+        if (s_row_x0[yb] < a0) a0 = s_row_x0[yb];
+        if (s_row_x1[yb] > a1) a1 = s_row_x1[yb];
+    }
+    int c0 = a0 > 0 ? a0 - 1 : 0, c1 = a1 < TRAIL_W - 1 ? a1 + 1 : TRAIL_W - 1;
+    int16_t *rw = s_row + 3;
+    for (int c = c0; c <= c1; c++) {
+        int i = c * 3;
+        int16_t r = (int16_t)(ra[i] * 3 + rb[i]);
+        int16_t g = (int16_t)(ra[i + 1] * 3 + rb[i + 1]);
+        int16_t b = (int16_t)(ra[i + 2] * 3 + rb[i + 2]);
+        rw[i] = r;
+        rw[i + 1] = g;
+        rw[i + 2] = b;
+        s_lit[c + 1] = (r | g | b) != 0;
+    }
+    if (c0 > 0) {  // 范围外的邻格是 0
+        memset(rw + (c0 - 1) * 3, 0, 3 * sizeof(int16_t));
+        s_lit[c0] = 0;
+    } else {       // 左边界 = 第 0 格
+        memcpy(s_row, rw, 3 * sizeof(int16_t));
+        s_lit[0] = s_lit[1];
+    }
+    if (c1 < TRAIL_W - 1) {
+        memset(rw + (c1 + 1) * 3, 0, 3 * sizeof(int16_t));
+        s_lit[c1 + 2] = 0;
+    } else {       // 右边界 = 最后一格
+        memcpy(rw + TRAIL_W * 3, rw + (TRAIL_W - 1) * 3, 3 * sizeof(int16_t));
+        s_lit[TRAIL_W + 1] = s_lit[TRAIL_W];
+    }
+    *c0o = c0;
+    *c1o = c1;
+    return true;
+}
+
 void gfx_compose(int rows)
 {
-    // 放大规则（每个半分辨率格子 c 对应整屏像素 2c、2c+1）：
-    //   像素 2c   = (3*P[c] + P[c-1]) / 4
-    //   像素 2c+1 = (3*P[c] + P[c+1]) / 4
-    // 纵向同理。光层大部分是 0，整格为 0 时直接写预先抖动好的背景色。
-    static int16_t row[(TRAIL_W + 2) * 3];
-    static uint8_t lit[TRAIL_W + 2];
+    // 光层大部分是 0，整格为 0 时直接写预先抖动好的背景色
     if (rows > GFX_H) {
         rows = GFX_H;
     }
     for (int y = 0; y < rows; y++) {
-        int k = y >> 1;
-        int yb = (y & 1) ? (k + 1 < TRAIL_H ? k + 1 : k) : (k > 0 ? k - 1 : 0);
-        if (!s_row_lit[k] && !s_row_lit[yb]) {
+        int c0, c1;
+        if (!trail_row(y, &c0, &c1)) {
             // 整行没光：直接铺预先抖动好的背景色
             const uint8_t *bg = s_bg[y];
             const uint8_t *bay = BAYER[y & 3];
@@ -218,40 +272,8 @@ void gfx_compose(int rows)
             }
             continue;
         }
-        const uint8_t *ra = s_trail + k * TRAIL_W * 3;
-        const uint8_t *rb = s_trail + yb * TRAIL_W * 3;
-        // 这两行光层有光的范围，左右各多算一格（插值要用到邻格）；范围外直接铺背景
-        int a0 = s_row_lit[k] ? s_row_x0[k] : TRAIL_W, a1 = s_row_lit[k] ? s_row_x1[k] : -1;
-        if (s_row_lit[yb]) {
-            if (s_row_x0[yb] < a0) a0 = s_row_x0[yb];
-            if (s_row_x1[yb] > a1) a1 = s_row_x1[yb];
-        }
-        int c0 = a0 > 0 ? a0 - 1 : 0, c1 = a1 < TRAIL_W - 1 ? a1 + 1 : TRAIL_W - 1;
-        int16_t *rw = row + 3;  // 左右各留一格做边界
-        for (int c = c0; c <= c1; c++) {
-            int i = c * 3;
-            int16_t r = (int16_t)(ra[i] * 3 + rb[i]);
-            int16_t g = (int16_t)(ra[i + 1] * 3 + rb[i + 1]);
-            int16_t b = (int16_t)(ra[i + 2] * 3 + rb[i + 2]);
-            rw[i] = r;
-            rw[i + 1] = g;
-            rw[i + 2] = b;
-            lit[c + 1] = (r | g | b) != 0;
-        }
-        if (c0 > 0) {  // 范围外的邻格是 0
-            memset(rw + (c0 - 1) * 3, 0, 3 * sizeof(int16_t));
-            lit[c0] = 0;
-        } else {       // 左边界 = 第 0 格
-            memcpy(row, rw, 3 * sizeof(int16_t));
-            lit[0] = lit[1];
-        }
-        if (c1 < TRAIL_W - 1) {
-            memset(rw + (c1 + 1) * 3, 0, 3 * sizeof(int16_t));
-            lit[c1 + 2] = 0;
-        } else {       // 右边界 = 最后一格
-            memcpy(rw + TRAIL_W * 3, rw + (TRAIL_W - 1) * 3, 3 * sizeof(int16_t));
-            lit[TRAIL_W + 1] = lit[TRAIL_W];
-        }
+        const int16_t *rw = s_row + 3;
+        const uint8_t *lit = s_lit;
 
         const uint8_t *bg = s_bg[y];
         const uint8_t *bay = BAYER[y & 3];
@@ -285,6 +307,56 @@ void gfx_compose(int rows)
                      s_lut_b[bb[j] + ((cb + pl[2]) >> 4)];
             out[x + 1] = s_lut_r[br[j + 1] + ((cr + pr[0]) >> 4)] | s_lut_g[bgg[j + 1] + ((cg + pr[1]) >> 4)] |
                          s_lut_b[bb[j + 1] + ((cb + pr[2]) >> 4)];
+        }
+    }
+}
+
+// 565 整体乘一个系数 a5/32：摊开成 0x07E0F81F 的 32 位格式，三个通道一次乘完
+static inline uint16_t dim565(uint32_t p, uint32_t a5)
+{
+    uint32_t c = (p | (p << 16)) & 0x07E0F81Fu;
+    c = ((c * a5) >> 5) & 0x07E0F81Fu;
+    return (uint16_t)(c | (c >> 16));
+}
+
+// 一趟走完：图从 PSRAM 只读一次。一个 32 位字是同一行相邻两个像素，正好对应光层的一格，
+// 没光的格子两个像素直接压暗；有光的格子用压暗表拆出三个通道，加上光再查表打包。
+void gfx_compose_img(const uint16_t *img, int bright)
+{
+    static uint8_t dr[32], dg[64], db[32];  // 5/6 位分量 → 压暗后的 8 位值
+    static int dim_built = -1;
+    uint32_t a5 = bright < 0 ? 0 : (bright > 32 ? 32 : (uint32_t)bright);
+    if (dim_built != (int)a5) {
+        for (int i = 0; i < 32; i++) {
+            dr[i] = db[i] = (uint8_t)((((i << 3) | (i >> 2)) * a5) >> 5);
+        }
+        for (int i = 0; i < 64; i++) {
+            dg[i] = (uint8_t)((((i << 2) | (i >> 4)) * a5) >> 5);
+        }
+        dim_built = (int)a5;
+    }
+    for (int y = 0; y < GFX_H; y++) {
+        const uint32_t *src = (const uint32_t *)(img + y * GFX_W);
+        uint32_t *out = (uint32_t *)(gfx_fb + y * GFX_W);
+        int c0 = TRAIL_W, c1 = -1;
+        trail_row(y, &c0, &c1);  // 整行没光时 c0 > c1，下面就全走压暗
+        const int16_t *rw = s_row + 3;
+        for (int c = 0; c < TRAIL_W; c++) {
+            uint32_t pp = src[c];
+            if (c < c0 || c > c1 || !(s_lit[c] | s_lit[c + 1] | s_lit[c + 2])) {
+                out[c] = a5 == 32 ? pp : (dim565(pp & 0xFFFF, a5) | ((uint32_t)dim565(pp >> 16, a5) << 16));
+                continue;
+            }
+            const int16_t *pl = rw + (c - 1) * 3, *pc = rw + c * 3, *pr = rw + (c + 1) * 3;
+            int cr = pc[0] * 3, cg = pc[1] * 3, cb = pc[2] * 3;
+            uint32_t p0 = pp & 0xFFFF, p1 = pp >> 16;
+            uint32_t o0 = s_lut_r[dr[p0 >> 11] + ((cr + pl[0]) >> 4)] |
+                          s_lut_g[dg[(p0 >> 5) & 63] + ((cg + pl[1]) >> 4)] |
+                          s_lut_b[db[p0 & 31] + ((cb + pl[2]) >> 4)];
+            uint32_t o1 = s_lut_r[dr[p1 >> 11] + ((cr + pr[0]) >> 4)] |
+                          s_lut_g[dg[(p1 >> 5) & 63] + ((cg + pr[1]) >> 4)] |
+                          s_lut_b[db[p1 & 31] + ((cb + pr[2]) >> 4)];
+            out[c] = o0 | (o1 << 16);
         }
     }
 }

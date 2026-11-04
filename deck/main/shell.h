@@ -19,3 +19,9 @@ const char *shell_current(void);
 // 背光由壳管：主机设的亮度（@@BRIGHT）是上限；Mac 睡了 / 主机走了、又没人碰屏幕时自动调暗
 void shell_brightness(uint8_t percent);
 bool shell_idle(void);  // 正暗着：渲染可以降帧
+void shell_wake(int64_t now_ms);  // 算作有人在（和碰了一下屏幕一样推迟调暗、暗着就亮回来）
+
+// 当前 app 想要的帧率（0 = 默认 30）。画面本来就更新得慢的 app（比如等 Mac 画的 GHIBLI）可以要低一点，
+// 省下的 CPU 和 PSRAM 带宽留给别的活；切换动画、点击水波纹时壳会自动回到 30fps。切 app 时清零
+void shell_want_fps(int fps);
+int shell_frame_ms(void);  // 主循环用：这一帧该隔多久

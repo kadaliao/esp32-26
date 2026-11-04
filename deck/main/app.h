@@ -22,6 +22,7 @@ typedef struct {
     const char *id;     // 协议名，主机发 "@@<id>{...}"
     const char *name;   // 首页磁贴标题
     rgb_t color;        // 主题色：磁贴边框、角标、切换时的页码点
+    bool camera;        // 用摄像头、不靠主机数据：磁贴不等 Mac 也不变 STALE；重启后不回到这里，免得一开机摄像头就亮
 
     void (*init)(void);                               // 开机调一次
     void (*data)(const cJSON *root, int64_t now_ms);  // 主机来了新数据
@@ -38,3 +39,5 @@ extern const app_t app_sys;
 extern const app_t app_magpie;
 extern const app_t app_pond;
 extern const app_t app_quota;
+extern const app_t app_mirror;
+extern const app_t app_eyes;

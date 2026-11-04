@@ -15,6 +15,9 @@ esp_lcd_panel_handle_t board_init(void);
 // I2C1 总线（触摸芯片和 IO 扩展挂在同一条上）
 i2c_master_bus_handle_t board_i2c(void);
 
+// 摄像头供电（PCA9557 bit2，低电平上电）。开机时是断电的
+void board_camera_power(bool on);
+
 // 背光亮度 0..100
 void board_backlight(uint8_t percent);
 

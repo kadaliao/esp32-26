@@ -14,6 +14,9 @@
 #include "board.h"
 #include "gfx.h"
 #include "input.h"
+#include "face.h"
+#include "lens.h"
+#include "relay.h"
 #include "link.h"
 #include "shell.h"
 #include "shot.h"
@@ -21,8 +24,6 @@
 static const char *TAG = "main";
 
 #define STRIPE_LINES 24
-#define FRAME_MS     33   // ~30 fps
-#define IDLE_FRAME_MS 100 // 屏幕调暗时 10 fps，省电
 
 static esp_lcd_panel_handle_t s_panel;
 static uint16_t *s_dma[2];
@@ -34,7 +35,7 @@ static int log_vprintf(const char *fmt, va_list ap)
     int n = vsnprintf(buf, sizeof(buf), fmt, ap);
     if (n > 0 && usb_serial_jtag_is_driver_installed()) {
         int len = n < (int)sizeof(buf) ? n : (int)sizeof(buf) - 1;
-        usb_serial_jtag_write_bytes(buf, (size_t)len, 0);
+        link_log_write(buf, (size_t)len);  // 和二进制帧共用写锁，不会插进图像数据中间
     }
     return n;
 }
@@ -123,7 +124,7 @@ static void render_task(void *arg)
             frames = 0;
             busy_us = 0;
         }
-        int wait = (shell_idle() ? IDLE_FRAME_MS : FRAME_MS) - (int)(used / 1000);
+        int wait = shell_frame_ms() - (int)(used / 1000);
         vTaskDelay(pdMS_TO_TICKS(wait > 1 ? wait : 1));
     }
 }
@@ -155,6 +156,9 @@ void app_main(void)
     s_idle = xSemaphoreCreateBinary();
     xSemaphoreGive(s_idle);
     input_start();
+    lens_init();  // 只建任务，摄像头等有应用要看时才上电
+    face_init();  // 同上，模型等第一次要用时才加载
+    relay_init();  // 送去 Mac 处理的画面（GHIBLI）
     shell_init();
     xTaskCreatePinnedToCore(push_task, "push", 4096, NULL, 6, NULL, 0);
 

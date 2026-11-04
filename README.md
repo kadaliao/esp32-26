@@ -4,7 +4,7 @@
 
 | 项目 | 说明 |
 |---|---|
-| [deck](deck/) | **桌面小面板**：首页磁贴 + 手势切换，下面几个项目都是它里面的应用，外加小屏版 htop。一套固件、一个主机进程，日常用这个 |
+| [deck](deck/) | **桌面小面板**：首页磁贴 + 手势切换，下面几个项目都是它里面的应用，外加小屏版 htop、摄像头镜子（光绘、字符雨、在 Mac 上画的吉卜力风格…）和一张会看你的卡通脸。一套固件、一个主机进程，日常用这个 |
 | [ai-subscription-display](ai-subscription-display/) | AI 用量面板：显示 Claude Code / Codex / DeepSeek / Grok 的订阅额度、重置倒计时和余额 |
 | [agent-pond](agent-pond/) | Agent 夜池：把本机正在跑的 coding agent 画成一池萤火虫 |
 | [magpie-live](magpie-live/) | magpie live：把 magpie 网关的实时请求画成往返飞行的喜鹊 |
